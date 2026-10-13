@@ -2,7 +2,6 @@ import axios from 'axios';
 
 export async function fetchRawAirdrops() {
   try {
-    // Menggunakan timeout agar tidak menggantung jika API lambat
     const response = await axios.get('https://api.llama.fi/protocols', {
       timeout: 10000,
       headers: {
@@ -12,10 +11,9 @@ export async function fetchRawAirdrops() {
     
     const protocols = response.data;
     if (!protocols || !Array.isArray(protocols)) {
-      throw.error('Format data API tidak valid');
+      throw new Error('Format data API tidak valid');
     }
 
-    // Filter protokol baru / tanpa token dengan aman
     const candidates = protocols
       .filter(p => !p.symbol || p.symbol === '-' || p.symbol === null)
       .slice(0, 10)
@@ -34,9 +32,8 @@ export async function fetchRawAirdrops() {
 
     return candidates;
   } catch (error) {
-    console.error('Error fetching data from API, menggunakan data simulasi cadangan:', error.message);
+    console.error('Error fetching data, menggunakan data cadangan:', error.message);
     
-    // Data Cadangan (Fallback) agar bot tetap bisa mengirimkan analisis AI meskipun API utama down
     return [
       {
         id: `fallback_${Date.now()}_1`,
@@ -56,4 +53,4 @@ export async function fetchRawAirdrops() {
       }
     ];
   }
-}
+          }
