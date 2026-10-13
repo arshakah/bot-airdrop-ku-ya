@@ -1,35 +1,50 @@
 import fs from 'fs';
 import path from 'path';
 
-const DB_FILE = path.resolve('saved_airdrops.json');
-
-if (!fs.existsSync(DB_FILE)) {
-  fs.writeFileSync(DB_FILE, JSON.stringify([]));
-}
+const filePath = path.resolve('saved_airdrops.json');
 
 export function getSavedAirdrops() {
   try {
-    const data = fs.readFileSync(DB_FILE, 'utf-8');
+    if (!fs.existsSync(filePath)) {
+      fs.writeFileSync(filePath, JSON.stringify([]));
+      return [];
+    }
+    const data = fs.readFileSync(filePath, 'utf-8');
     return JSON.parse(data);
-  } catch (err) {
+  } catch (error) {
+    console.error('Gagal membaca database lokal:', error.message);
     return [];
   }
 }
 
-export function saveAirdrop(airdrop) {
-  const saved = getSavedAirdrops();
-  if (!saved.some(item => item.id === airdrop.id)) {
-    saved.push(airdrop);
-    fs.writeFileSync(DB_FILE, JSON.stringify(saved, null, 2));
+export function saveAirdrop(item) {
+  try {
+    const saved = getSavedAirdrops();
+    const exists = saved.some(s => s.id === item.id);
+    if (exists) return false;
+
+    saved.push(item);
+    fs.writeFileSync(filePath, JSON.stringify(saved, null, 2));
     return true;
+  } catch (error) {
+    console.error('Gagal menyimpan airdrop:', error.message);
+    return false;
   }
-  return false;
 }
 
 export function removeSavedAirdrop(id) {
-  let saved = getSavedAirdrops();
-  const initialLength = saved.length;
-  saved = saved.filter(item => item.id !== id);
-  fs.writeFileSync(DB_FILE, JSON.stringify(saved, null, 2));
-  return saved.length < initialLength;
+  try {
+    let saved = getSavedAirdrops();
+    const initialLength = saved.length;
+    saved = saved.filter(s => s.id !== id);
+    
+    if (saved.length === initialLength) return false;
+
+    fs.writeFileSync(filePath, JSON.stringify(saved, null, 2));
+    return true;
+  } catch (error) {
+    console.error('Gagal menghapus airdrop:', error.message);
+    return false;
   }
+}
+  
