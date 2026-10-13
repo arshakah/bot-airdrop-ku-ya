@@ -2,8 +2,11 @@ import OpenAI from 'openai';
 import dotenv from 'dotenv';
 dotenv.config();
 
+// Pastikan API Key di-trim untuk menghapus karakter/spasi tersembunyi
+const apiKey = (process.env.GROK_API_KEY || '').trim();
+
 const grok = new OpenAI({
-  apiKey: process.env.GROK_API_KEY,
+  apiKey: apiKey,
   baseURL: 'https://api.x.ai/v1',
 });
 
@@ -39,7 +42,7 @@ HANYA kembalikan string JSON valid tanpa penjelasan tambahan di luar JSON.
 
   try {
     const response = await grok.chat.completions.create({
-      model: 'grok-beta',
+      model: 'grok-beta', // Atau 'grok-2-1212' / 'grok-2-latest'
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.3,
     });
