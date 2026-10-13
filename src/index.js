@@ -1,160 +1,142 @@
 import { Telegraf, Markup } from 'telegraf';
-import cron from 'node-cron';
 import dotenv from 'dotenv';
 import { fetchRawAirdrops } from './scraper.js';
 import { analyzeAndFormatAirdrop } from './ai.js';
-import { saveAirdrop, removeSavedAirdrop, getSavedAirdrops } from './storage.js';
+import { getSavedAirdrops, saveAirdrop, removeSavedAirdrop } from './storage.js';
 
 dotenv.config();
 
-const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-
-let isAutoScanningActive = false;
-let cronTask = null;
-const cacheAirdrops = new Map();
-
-function getMainMenuKeyboard() {
-  return Markup.keyboard([
-    ['🚀 Mulai Pemindaian Otomatis', '🛑 Berhenti Pemindaian'],
-    ['🔎 Cek Airdrop Sekarang', '📁 Lihat Airdrop Tersimpan']
-  ]).resize();
+const token = process.env.TELEGRAM_BOT_TOKEN;
+if (!token) {
+  console.error('TELEGRAM_BOT_TOKEN tidak ditemukan di environment variables!');
+  process.exit(1);
 }
+
+const bot = new Telegraf(token);
 
 bot.start((ctx) => {
   ctx.reply(
-    '👋 *Selamat Datang di Bot Airdrop AI Hunter (Powered by Grok)*\n\nGunakan tombol menu di bawah untuk mengontrol bot:',
-    { parse_mode: 'Markdown', ...getMainMenuKeyboard() }
+    '🤖 *Selamat Datang di Bot Airdrop Grok AI!*\n\n' +
+    'Bot ini siap memindai peluang airdrop terbaru, menganalisisnya menggunakan Grok AI, dan membantu Anda menyimpannya.',
+    {
+      parse_mode: 'Markdown',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('🔎 Cek Airdrop Sekarang', 'check_airdrop')],
+        [Markup.button.callback('📁 Lihat Airdrop Tersimpan', 'view_saved')]
+      ])
+    }
   );
 });
 
-bot.hears('🚀 Mulai Pemindaian Otomatis', (ctx) => {
-  if (isAutoScanningActive) {
-    return ctx.reply('✅ Pemindaian harian otomatis sudah berjalan.');
-  }
+bot.action('check_airdrop', async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.reply('⏳ Sedang memindai protokol dan menganalisis airdrop dengan Grok AI, mohon tunggu sebentar...');
 
-  isAutoScanningActive = true;
-  cronTask = cron.schedule('0 2 * * *', async () => {
-    console.log('[CRON] Running daily airdrop scan...');
-    await runAirdropScan(bot.telegram, CHAT_ID);
-  });
+  try {
+    const rawDataList = await fetchRawAirdrops();
+    if (!rawDataList || rawDataList.length === 0) {
+      return ctx.reply('❌ Gagal menemukan data airdrop saat ini.');
+    }
 
-  ctx.reply('▶️ *Pemindaian otomatis 24/7 diaktifkan!* Bot akan memindai & melaporkan airdrop baru setiap hari.', { parse_mode: 'Markdown' });
-});
+    const sample = rawDataList[0];
+    const analyzedResults = await analyzeAndFormatAirdrop(sample);
 
-bot.hears('🛑 Berhenti Pemindaian', (ctx) => {
-  if (!isAutoScanningActive) {
-    return ctx.reply('ℹ️ Pemindaian otomatis sedang tidak aktif.');
-  }
+    if (!analyzedResults || analyzedResults.length === 0) {
+      return ctx.reply('❌ Gagal mendapatkan hasil analisis dari Grok AI.');
+    }
 
-  isAutoScanningActive = false;
-  if (cronTask) cronTask.stop();
-  ctx.reply('⏹️ *Pemindaian otomatis dihentikan.* Bot tidak akan mengirim pembaruan harian secara otomatis.', { parse_mode: 'Markdown' });
-});
+    for (const item of analyzedResults) {
+      const message = 
+        `🚀 *${item.name}*\n\n` +
+        `🌐 *Chain:* ${item.chain}\n` +
+        `📊 *Status:* ${item.status}\n` +
+        `🏷 *Kategori:* ${item.category}\n` +
+        `💎 *Potensi Reward:* ${item.reward_potential}\n` +
+        `💰 *Modal:* ${item.capital_required}\n\n` +
+        `📝 *Alasan Potensi:* ${item.reason}\n\n` +
+        `🛠 *Langkah Partisipasi:*\n` +
+        item.steps.map((s, i) => `${i + 1}. ${s}`).join('\n') + `\n\n` +
+        `🛡 *Tips Sybil:* ${item.sybil_tips}\n\n` +
+        `🔗 [Link Resmi](${item.url})`;
 
-bot.hears('🔎 Cek Airdrop Sekarang', async (ctx) => {
-  await ctx.reply('🔎 *Sedang memindai data & memproses analisis Grok AI... (Mohon tunggu)*', { parse_mode: 'Markdown' });
-  await runAirdropScan(ctx.telegram, ctx.chat.id);
-});
-
-bot.hears('📁 Lihat Airdrop Tersimpan', (ctx) => {
-  const saved = getSavedAirdrops();
-  if (!saved.length) {
-    return ctx.reply('📂 Belum ada airdrop yang disimpan.');
-  }
-
-  ctx.reply(`📦 *Daftar Airdrop Tersimpan (${saved.length}):*`, { parse_mode: 'Markdown' });
-  
-  for (const item of saved) {
-    const text = formatAirdropMessage(item);
-    const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('❌ Hapus dari Simpanan', `delete_saved_${item.id}`)]
-    ]);
-    ctx.reply(text, { parse_mode: 'Markdown', disable_web_page_preview: true, ...keyboard });
-  }
-});
-
-async function runAirdropScan(telegramObj, chatId) {
-  const rawList = await fetchRawAirdrops();
-  if (!rawList.length) {
-    return telegramObj.sendMessage(chatId, '❌ Gagal mengambil data airdrop terbaru.');
-  }
-
-  for (const rawItem of rawList.slice(0, 3)) {
-    const analyzed = await analyzeAndFormatAirdrop(rawItem);
-    if (analyzed && analyzed.length > 0) {
-      const item = analyzed[0];
-      cacheAirdrops.set(item.id, item);
-
-      const messageText = formatAirdropMessage(item);
-      const keyboard = Markup.inlineKeyboard([
-        [
-          Markup.button.callback('💾 Simpan Airdrop', `save_${item.id}`),
-          Markup.button.callback('❌ Buang / Hapus', `dismiss_${item.id}`)
-        ]
-      ]);
-
-      await telegramObj.sendMessage(chatId, messageText, {
+      await ctx.reply(message, {
         parse_mode: 'Markdown',
         disable_web_page_preview: true,
-        ...keyboard
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('💾 Simpan Airdrop', `save_${item.id}`)],
+          [Markup.button.callback('❌ Lewati', 'skip_airdrop')]
+        ])
       });
+      
+      global.tempAirdropStore = global.tempAirdropStore || {};
+      global.tempAirdropStore[item.id] = item;
     }
+  } catch (err) {
+    console.error('Error saat proses airdrop:', err);
+    ctx.reply('❌ Terjadi kesalahan sistem saat memproses airdrop.');
   }
-}
+});
 
-function formatAirdropMessage(item) {
-  const stepsList = item.steps ? item.steps.map(s => `  • ${s}`).join('\n') : '  • Lihat panduan di link resmi';
-  
-  return `💎 *AIRDROP REPORT: ${item.name}* 💎\n\n` +
-         `🌐 *Jaringan:* ${item.chain}\n` +
-         `📌 *Status:* ${item.status}\n` +
-         `🏷️ *Kategori:* ${item.category}\n` +
-         `💰 *Estimasi Potensi:* ${item.reward_potential}\n` +
-         `💵 *Modal Required:* ${item.capital_required}\n\n` +
-         `💡 *Alasan Pemilihan (Grok AI):*\n${item.reason}\n\n` +
-         `📋 *Langkah-Langkah Partisipasi:* \n${stepsList}\n\n` +
-         `🛡️ *Tips Anti-Sybil:* ${item.sybil_tips || 'Gunakan wallet terpisah'}\n\n` +
-         `🔗 *Link Resmi:* ${item.url}`;
-}
-
-bot.action(/^save_(.+)$/, (ctx) => {
+bot.action(/^save_(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
   const id = ctx.match[1];
-  const item = cacheAirdrops.get(id);
+  const itemToSave = global.tempAirdropStore ? global.tempAirdropStore[id] : null;
 
-  if (!item) {
-    return ctx.answerCbQuery('⚠️ Data airdrop tidak ditemukan di cache.');
-  }
-
-  const success = saveAirdrop(item);
-  if (success) {
-    ctx.answerCbQuery('✅ Airdrop berhasil disimpan!');
-    ctx.editMessageReplyMarkup(Markup.inlineKeyboard([
-      [Markup.button.callback('✅ Tersimpan dalam Database', 'already_saved')]
-    ]).reply_markup);
+  if (itemToSave) {
+    const success = saveAirdrop(itemToSave);
+    if (success) {
+      await ctx.reply(`✅ Airdrop *${itemToSave.name}* berhasil disimpan ke database lokal!`, { parse_mode: 'Markdown' });
+    } else {
+      await ctx.reply('⚠️ Airdrop ini sudah pernah disimpan sebelumnya.');
+    }
   } else {
-    ctx.answerCbQuery('ℹ️ Airdrop sudah pernah disimpan sebelumnya.');
+    await ctx.reply('❌ Data airdrop tidak ditemukan di memori sementara.');
   }
 });
 
-bot.action(/^dismiss_(.+)$/, (ctx) => {
-  ctx.answerCbQuery('🗑️ Dihapus');
-  ctx.deleteMessage();
+bot.action('skip_airdrop', async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.reply('👍 Baik, silakan cari airdrop lainnya.');
 });
 
-bot.action(/^delete_saved_(.+)$/, (ctx) => {
+bot.action('view_saved', async (ctx) => {
+  await ctx.answerCbQuery();
+  const saved = getSavedAirdrops();
+
+  if (saved.length === 0) {
+    return ctx.reply('📁 Belum ada airdrop yang Anda simpan.');
+  }
+
+  for (const item of saved) {
+    const message = 
+      `📁 *[TERSIMPAN] ${item.name}*\n\n` +
+      `🌐 *Chain:* ${item.chain}\n` +
+      `🔗 [Link Resmi](${item.url})`;
+
+    await ctx.reply(message, {
+      parse_mode: 'Markdown',
+      disable_web_page_preview: true,
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback(`🗑 Hapus ${item.name}`, `del_${item.id}`)]
+      ])
+    });
+  }
+});
+
+bot.action(/^del_(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
   const id = ctx.match[1];
-  removeSavedAirdrop(id);
-  ctx.answerCbQuery('❌ Berhasil dihapus dari penyimpanan.');
-  ctx.deleteMessage();
+  const removed = removeSavedAirdrop(id);
+  if (removed) {
+    await ctx.reply('🗑 Airdrop berhasil dihapus dari daftar simpanan.');
+  } else {
+    await ctx.reply('❌ Gagal menghapus airdrop.');
+  }
 });
 
-bot.action('already_saved', (ctx) => ctx.answerCbQuery('Sudah tersimpan!'));
-
-bot.launch().then(() => {
-  console.log('🤖 Bot Telegram Airdrop Grok AI Siap Digunakan!');
-});
+bot.launch();
+console.log('🤖 Bot Telegram Airdrop Grok AI Siap Digunakan!');
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
-            
+      
